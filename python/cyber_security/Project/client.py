@@ -1,40 +1,51 @@
 import socket
 import threading
+import sys
 
 HOST = "127.0.0.1"
 PORT = 12345
 
 def receive_messages(sock):
+    """Receive messages from server"""
     while True:
         try:
-            message = sock.recv(1024)
-            if not message:
-                print("Server closed connection.")
+            message = sock.recv(1024).decode()
+            if message:
+                print(f"\n{message}")
+                print("> ", end="", flush=True)
+            else:
                 break
-            print("\n" + message.decode())
         except:
             break
 
-def send_messages(sock):
-    while True:
-        try:
-            msg = input()
-            if msg.lower() == "exit":  # type "exit" to quit
-                sock.close()
-                break
-            sock.sendall(msg.encode())
+def main():
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((HOST, PORT))
+        
+        # Send username
+        username = input("Enter your username: ").strip()[:20]
+        sock.sendall(username.encode())
+        
+        # Start receive thread
+        recv_thread = threading.Thread(target=receive_messages, args=(sock,), daemon=True)
+        recv_thread.start()
+        
+        print("[CLIENT] Connected! Type messages (Ctrl+C to exit):\n")
+        
+        # Send messages
+        while True:
+            message = input("> ").strip()
+            if message:
+                sock.sendall(message.encode())
+    
+    except ConnectionRefusedError:
+        print(f"[ERROR] Cannot connect to {HOST}:{PORT}")
+    except Exception as e:
+        print(f"[ERROR] {e}")
+    finally:
+        sock.close()
+        print("[CLIENT] Disconnected")
 
-        except (KeyboardInterrupt, OSError):
-            print("Disconnected from server.")
-            break
-
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.connect((HOST, PORT))
-
-    print("Connected to chat!")
-    username = input("type your username: ")
-    s.sendall(username.encode())
-
-    threading.Thread(target=receive_messages, args=(s,), daemon=True).start()
-
-    send_messages(s)
+if __name__ == "__main__":
+    main()
