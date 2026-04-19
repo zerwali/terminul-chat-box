@@ -12,18 +12,27 @@ MESSAGE_BUFFER_SIZE = 1024
 
 clients = {} 
 clients_lock = threading.Lock() 
+shutdown_event = threading.Event()
 
 # ================= LOGGING =================
 def log_event(event_type, username="", extra=""):
     """Log events to file for audit trail"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    log_file = Path("chat_log.txt")
-    with open(log_file, "a") as f:
-        if extra:
-            f.write(f"[{timestamp}] {event_type}: {username} - {extra}\n")
-        else:
-            f.write(f"[{timestamp}] {event_type}: {username}\n")
+    chatlog_file = Path("chat_log.txt")
+    eventlog_file = Path("event_log.txt")
+    if event_type == 'MESSAGE' or event_type == 'ANNOUNCEMENT':
+        with open(chatlog_file, "a") as f:
+            if extra:
+                f.write(f"[{timestamp}] {event_type}: {username} - {extra}\n")
+            else:
+                f.write(f"[{timestamp}] {event_type}: {username}\n")
+    else:
+        with open(eventlog_file, "a") as f:
+            if extra:
+                f.write(f"[{timestamp}] {event_type}: {username} - {extra}\n")
+            else:
+                f.write(f"[{timestamp}] {event_type}: {username}\n")
 
 # ================= SYSTEM MESSAGE =================
 def system_msg(username, msg_type):
@@ -32,12 +41,12 @@ def system_msg(username, msg_type):
         "JOIN": f"joined the chat",
         "LEAVE": f"left the chat",
         "KICK": f"was kicked from the chat",
+        "ANNOUNCEMENT": f"announce"
     }
     
     if msg_type in messages:
         return f"[SERVER]: {username} {messages[msg_type]}"
     return f"[SERVER]: {msg_type}"
-
 
 # ================= BROADCAST =================
 def broadcast(message, sender_conn=None, exclude_sender=True):
@@ -76,7 +85,6 @@ def broadcast(message, sender_conn=None, exclude_sender=True):
             if conn in clients:
                 del clients[conn]
 
-
 # ================= BROADCAST TO SENDER =================
 def broadcast_to_sender(conn, message):
     """Send message only to the sender"""
@@ -86,6 +94,26 @@ def broadcast_to_sender(conn, message):
     except:
         pass
 
+# ================= PRIVATE MESSAGING =================
+def private_message(sender, receiver, message):
+    """Send private message"""
+    if receiver is None:
+        print(f"User not found: {receiver}")
+        return
+    encoded_message = f"[PM FROM {sender}] {message}\n".encode()
+
+    try:
+        receiver.sendall(encoded_message)
+    except Exception as e:
+        print(f"Error sending PM to {receiver}: {e}")
+
+def find_client_by_username(username):
+    """Find a connected client socket by username"""
+    with clients_lock:
+        for conn, client_info in clients.items():
+            if client_info["username"] == username:
+                return conn
+    return None
 
 # ================= ADMIN TOOLS =================
 class AdminTools:
@@ -108,26 +136,29 @@ class AdminTools:
     @staticmethod
     def kick(target_username):
         """Kick a user from the chat"""
+        kicked_conn = None
+        kicked_addr = None
+
         with clients_lock:
             for conn in list(clients):
                 if clients[conn]["username"] == target_username:
-                    addr = clients[conn]["addr"]
-                    
-                    # Log the kick
-                    log_event("KICK", target_username, str(addr))
-                    
-                    # Notify others
-                    broadcast(system_msg(target_username, "KICK"))
-                    
-                    # Close connection
-                    try:
-                        conn.close()
-                    except:
-                        pass
-                    
+                    kicked_conn = conn
+                    kicked_addr = clients[conn]["addr"]
                     del clients[conn]
-                    print(f"[ADMIN] {target_username} kicked successfully")
-                    return
+                    break
+
+        if kicked_conn is not None:
+            # Log and notify outside the lock to avoid deadlocking broadcast()
+            log_event("KICK", target_username, str(kicked_addr))
+            broadcast(system_msg(target_username, "KICK"))
+
+            try:
+                kicked_conn.close()
+            except:
+                pass
+
+            print(f"[ADMIN] kicked {target_username} successfully")
+            return
         
         print(f"[ADMIN] User '{target_username}' not found")
     
@@ -136,6 +167,7 @@ class AdminTools:
         """Send server announcement to all"""
         announcement = f"[ANNOUNCEMENT]: {message}"
         broadcast(announcement)
+        log_event("ANNOUNCEMENT", "ADMIN", message)
         print(f"[ADMIN] Announcement sent")
     
     @staticmethod
@@ -150,6 +182,33 @@ class AdminTools:
         print(f"  Connected Users: {user_count}/{MAX_CONNECTIONS}")
         print("> ", end="", flush=True)
 
+    @staticmethod
+    def server_shutdown():
+        """Server Shutdown"""
+        shutdown_event.set()
+        print("disconnecting the clients....")
+
+        with clients_lock:
+            active_connections = list(clients.keys())
+
+        broadcast("[SERVER]: Server is shutting down")
+
+        for conn in active_connections:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except:
+                pass
+            try:
+                conn.close()
+            except:
+                pass
+
+        with clients_lock:
+            for conn in active_connections:
+                clients.pop(conn, None)
+
+        print("all clients disconnected")
+        print("Shutting down the Server.....")
 
 # ================= ADMIN INPUT =================
 def admin_input():
@@ -159,6 +218,7 @@ def admin_input():
     print("  /kick <username>   - Kick a user")
     print("  /announce <msg>    - Send announcement")
     print("  /info              - Server info")
+    print("  /shutdown          - Shutdown server")
     print("  /help              - Show this help")
     print()
     
@@ -183,6 +243,10 @@ def admin_input():
             
             elif command == "/info":
                 AdminTools.server_info()
+
+            elif command == "/shutdown":
+                AdminTools.server_shutdown()
+                break
             
             elif command == "/help":
                 print("\nAvailable commands:")
@@ -190,6 +254,7 @@ def admin_input():
                 print("  /kick <username>   - Kick a user")
                 print("  /announce <msg>    - Send announcement")
                 print("  /info              - Server info")
+                print("  /shutdown          - Shutdown server")
                 print("> ", end="", flush=True)
             
             else:
@@ -201,7 +266,6 @@ def admin_input():
             break
         except Exception as e:
             print(f"[ADMIN ERROR] {e}")
-
 
 # ================= CLIENT HANDLER =================
 def handle_client(conn, addr):
@@ -253,9 +317,27 @@ def handle_client(conn, addr):
             
             msg_text = message.decode().strip()
             if msg_text:
-                print(f"[{username}] {msg_text}")
-                log_event("MESSAGE", username, msg_text)
-                broadcast(message, conn, exclude_sender=False)
+                if msg_text.startswith("/pm "):
+                    parts = msg_text.split(maxsplit=2)
+                    if len(parts) < 3:
+                        broadcast_to_sender(conn, "[SERVER]: Usage: /pm <username> <message>")
+                        continue
+
+                    target_username = parts[1]
+                    private_text = parts[2]
+                    target_conn = find_client_by_username(target_username)
+
+                    if target_conn is None:
+                        broadcast_to_sender(conn, f"[SERVER]: User '{target_username}' not found")
+                        continue
+
+                    private_message(username, target_conn, private_text)
+                    broadcast_to_sender(conn, f"[SERVER]: PM sent to {target_username}")
+                    log_event("MESSAGE", username, f"PM to {target_username}: {private_text}")
+                else:
+                    print(f"[{username}] {msg_text}")
+                    log_event("MESSAGE", username, msg_text)
+                    broadcast(message, conn, exclude_sender=False)
     
     except socket.timeout:
         print(f"[ERROR] {addr} connection timeout (no username received)")
@@ -264,6 +346,8 @@ def handle_client(conn, addr):
         print(f"[ERROR] {addr} - {type(e).__name__}: {e}")
     
     finally:
+        leave_message = None
+
         # Cleanup
         with clients_lock:
             if conn in clients:
@@ -272,7 +356,10 @@ def handle_client(conn, addr):
                 
                 if username:
                     log_event("LEAVE", username, str(addr))
-                    broadcast(system_msg(username, "LEAVE"), exclude_sender=True)
+                    leave_message = system_msg(username, "LEAVE")
+
+        if leave_message:
+            broadcast(leave_message, exclude_sender=True)
         
         try:
             conn.close()
@@ -280,7 +367,6 @@ def handle_client(conn, addr):
             pass
         
         print(f"[DISCONNECTED] {username} ({addr})")
-
 
 # ================= SERVER START =================
 def main():
@@ -290,6 +376,7 @@ def main():
         try:
             server.bind((HOST, PORT))
             server.listen(5)
+            server.settimeout(1.0)
             print(f"[SERVER STARTED] Listening on {HOST}:{PORT}")
             print(f"[INFO] Max connections: {MAX_CONNECTIONS}\n")
             
@@ -298,7 +385,7 @@ def main():
             admin_thread.start()
             
             # Accept connections
-            while True:
+            while not shutdown_event.is_set():
                 try:
                     conn, addr = server.accept()
                     client_thread = threading.Thread(
@@ -307,9 +394,13 @@ def main():
                         daemon=True
                     )
                     client_thread.start()
+
+                except socket.timeout:
+                    continue
                 
                 except KeyboardInterrupt:
                     print("\n[SERVER] Shutting down...")
+                    AdminTools.server_shutdown()
                     break
         
         except Exception as e:
