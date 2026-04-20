@@ -2,6 +2,7 @@ import socket
 import threading
 import time
 import json
+from colorama import Fore, Style, just_fix_windows_console
 from pathlib import Path
 from datetime import datetime
 
@@ -13,6 +14,9 @@ MESSAGE_BUFFER_SIZE = 1024
 clients = {} 
 clients_lock = threading.Lock() 
 shutdown_event = threading.Event()
+
+# Enable ANSI color support in Windows terminals (PowerShell/CMD).
+just_fix_windows_console()
 
 # ================= LOGGING =================
 def log_event(event_type, username="", extra=""):
@@ -45,8 +49,21 @@ def system_msg(username, msg_type):
     }
     
     if msg_type in messages:
-        return f"[SERVER]: {username} {messages[msg_type]}"
-    return f"[SERVER]: {msg_type}"
+        return f"{Fore.GREEN}[SERVER]: {username} {messages[msg_type]}{Style.RESET_ALL}"
+    return f"{Fore.GREEN}[SERVER]: {msg_type}{Style.RESET_ALL}"
+
+def announcement_banner(message):
+    """Create a bordered announcement with text inside."""
+    clean_msg = str(message).strip() or "(empty announcement)"
+    event = " [ANNOUNCEMENT] "
+    content = f"{clean_msg} "
+    width = max(len(content), 60)
+    border = "=" * width
+    return (
+        f"{Fore.YELLOW}{Style.BRIGHT}{border}\n"
+        f"{Fore.RED}{Style.BRIGHT}{event}{Style.RESET_ALL}{content.center(width)}\n"
+        f"{Fore.YELLOW}{Style.BRIGHT}{border}{Style.RESET_ALL}"
+    )
 
 # ================= BROADCAST =================
 def broadcast(message, sender_conn=None, exclude_sender=True):
@@ -105,7 +122,7 @@ def private_message(sender, receiver, message):
     try:
         receiver.sendall(encoded_message)
     except Exception as e:
-        print(f"Error sending PM to {receiver}: {e}")
+        print(f"{Fore.RED} Error sending PM to {receiver}: {e}")
 
 def find_client_by_username(username):
     """Find a connected client socket by username"""
@@ -123,10 +140,10 @@ class AdminTools:
         """List all connected users"""
         with clients_lock:
             if not clients:
-                print("\n[ADMIN] No users connected")
+                print(f"\n{Fore.MAGENTA} [ADMIN]{Style.RESET_ALL} No users connected")
                 return
             
-            print("\n[ADMIN] Users connected:")
+            print(f"\n{Fore.MAGENTA} [ADMIN]{Style.RESET_ALL} Users connected:")
             for i, (conn, client_info) in enumerate(clients.items(), 1):
                 username = client_info["username"]
                 addr = client_info["addr"]
@@ -165,10 +182,11 @@ class AdminTools:
     @staticmethod
     def send_announcement(message):
         """Send server announcement to all"""
-        announcement = f"[ANNOUNCEMENT]: {message}"
+        announcement = announcement_banner(message)
         broadcast(announcement)
         log_event("ANNOUNCEMENT", "ADMIN", message)
-        print(f"[ADMIN] Announcement sent")
+        print(f"{Fore.MAGENTA}{Style.BRIGHT}[ADMIN]{Style.RESET_ALL} Announcement sent")
+        print(announcement)
     
     @staticmethod
     def server_info():
@@ -176,7 +194,7 @@ class AdminTools:
         with clients_lock:
             user_count = len(clients)
         
-        print(f"\n[SERVER INFO]")
+        print(f"\n{Fore.CYAN} [SERVER INFO] {Style.RESET_ALL}")
         print(f"  Host: {HOST}")
         print(f"  Port: {PORT}")
         print(f"  Connected Users: {user_count}/{MAX_CONNECTIONS}")
@@ -213,7 +231,7 @@ class AdminTools:
 # ================= ADMIN INPUT =================
 def admin_input():
     """Handle admin commands from stdin"""
-    print("\n[ADMIN MODE] Available commands:")
+    print(f"\n{Fore.GREEN} [ADMIN MODE]{Style.RESET_ALL} Available commands:")
     print("  /list              - List all connected users")
     print("  /kick <username>   - Kick a user")
     print("  /announce <msg>    - Send announcement")
@@ -270,7 +288,7 @@ def admin_input():
 # ================= CLIENT HANDLER =================
 def handle_client(conn, addr):
     """Handle individual client connection"""
-    print(f"[NEW CONNECTION] {addr} connected")
+    print(f"{Fore.CYAN}[NEW CONNECTION]{Style.RESET_ALL} {addr} connected")
     
     username = None
     
@@ -281,7 +299,7 @@ def handle_client(conn, addr):
         conn.settimeout(None)
         
         if not username_data:
-            print(f"[ERROR] {addr} sent empty username")
+            print(f"{Fore.RED} [ERROR] {addr} sent empty username")
             return
         
         username = username_data[:20]  # Limit username length
@@ -291,13 +309,13 @@ def handle_client(conn, addr):
             for existing_conn in clients:
                 if clients[existing_conn]["username"] == username:
                     broadcast_to_sender(conn, "[SERVER]: Username already taken!")
-                    print(f"[ERROR] {addr} tried to use taken username: {username}")
+                    print(f"{Fore.RED} [ERROR] {addr} tried to use taken username: {username}")
                     return
             
             # Check connection limit
             if len(clients) >= MAX_CONNECTIONS:
                 broadcast_to_sender(conn, "[SERVER]: Server is full!")
-                print(f"[ERROR] Server full, rejecting {addr}")
+                print(f"{Fore.RED} [ERROR] Server full, rejecting {addr}")
                 return
             
             clients[conn] = {"username": username, "addr": addr}
@@ -306,7 +324,7 @@ def handle_client(conn, addr):
         log_event("JOIN", username, str(addr))
         broadcast(system_msg(username, "JOIN"), exclude_sender=True)
         broadcast_to_sender(conn, "[SERVER]: Welcome to the chat!")
-        print(f"[USERNAME] {addr} is {username}")
+        print(f"{Fore.GREEN}[USERNAME]{Style.RESET_ALL} {addr} is {username}")
         
         # Main message loop
         while True:
@@ -340,10 +358,10 @@ def handle_client(conn, addr):
                     broadcast(message, conn, exclude_sender=False)
     
     except socket.timeout:
-        print(f"[ERROR] {addr} connection timeout (no username received)")
+        print(f"{Fore.RED} [ERROR] {addr} connection timeout (no username received)")
     
     except Exception as e:
-        print(f"[ERROR] {addr} - {type(e).__name__}: {e}")
+        print(f"{Fore.RED} [ERROR] {addr} - {type(e).__name__}: {e}")
     
     finally:
         leave_message = None
@@ -366,7 +384,7 @@ def handle_client(conn, addr):
         except:
             pass
         
-        print(f"[DISCONNECTED] {username} ({addr})")
+        print(f"{Fore.YELLOW}[DISCONNECTED]{Style.RESET_ALL} {username} ({addr})")
 
 # ================= SERVER START =================
 def main():
@@ -377,8 +395,8 @@ def main():
             server.bind((HOST, PORT))
             server.listen(5)
             server.settimeout(1.0)
-            print(f"[SERVER STARTED] Listening on {HOST}:{PORT}")
-            print(f"[INFO] Max connections: {MAX_CONNECTIONS}\n")
+            print(f"{Fore.GREEN}[SERVER STARTED]{Style.RESET_ALL} Listening on {HOST}:{PORT}")
+            print(f"{Fore.CYAN}[INFO]{Style.RESET_ALL} Max connections: {MAX_CONNECTIONS}\n")
             
             # Start admin thread
             admin_thread = threading.Thread(target=admin_input, daemon=True)
@@ -404,8 +422,7 @@ def main():
                     break
         
         except Exception as e:
-            print(f"[FATAL ERROR] {type(e).__name__}: {e}")
-
+            print(f"{Fore.RED} [FATAL ERROR] {type(e).__name__}: {e}")
 
 if __name__ == "__main__":
     main()
